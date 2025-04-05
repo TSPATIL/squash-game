@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Squash Game - Room Based</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background: #c3bfbf;
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            border: 2px solid #000;
+            background-color: #fff;
+            display: block;
+            margin: 20px auto;
+        }
+        #roomForm {
+            margin-bottom: 20px;
+        }
+        #roomDisplay {
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        button {
+            margin: 5px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        #roomInput {
+            padding: 7px 10px;
+            font-size: 1.2rem;
+        }
+
+        .game-btn {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+        }
+
+        #startGameBtn:hover{
+            background-color: teal;
+            color:white;
+            transition: all;
+            transition-duration: 0.5s;
+            scale: 1.2;
+        }
+        
+        #serveBtn:hover{
+            background-color: teal;
+            color:white;
+            transition: all;
+            transition-duration: 0.5s;
+            scale: 1.2;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Squash Game</h1>
+
+    <!-- Room Join/Create Form -->
+    <form id="roomForm">
+        <input type="text" id="roomInput" placeholder="Enter room ID or leave blank" />
+        <button type="submit">Join/Create Room</button>
+    </form>
+
+    <div id="pingDisplay" style="position: absolute; top: 10px; right: 10px; color: white; font-family: monospace;"></div>
+
+    <!-- Display current room ID -->
+    <div id="roomDisplay"></div>
+    <div id="player"></div>
+
+    <div id="latencyDisplay" style="position: absolute; top: 40px; right: 10px; color: yellow; font-family: monospace;"></div>
+
+    <!-- Game canvas -->
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+
+    <!-- Game buttons -->
+     <div class="game-btn">
+    <button id="startGameBtn">Start Game</button>
+    <button id="serveBtn" style="display: none;">Serve</button>
+</div>
+
+    <!-- Socket.IO & Game Logic -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+
+</body>
+</html>
