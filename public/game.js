@@ -12,6 +12,9 @@ let playerType = null;
 let gameState = null;
 let roomId = new URLSearchParams(window.location.search).get("room");
 
+let lamportClock = 0;
+const messageLog = document.getElementById('messageLog');
+
 let smoothPaddles = {
     left: { x: 0, y: 0 },
     right: { x: 0, y: 0 }
@@ -20,6 +23,8 @@ let smoothPaddles = {
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
+
+const lamportMessages = [];
 
 // Auto-join room from URL
 if (roomId) {
@@ -70,11 +75,11 @@ socket.on("gameState", (state) => {
     gameState = state;
 
     if (state.players.left) {
-        smoothPaddles.left.y = lerp(smoothPaddles.left.y, state.players.left.y, 0.2);
+        smoothPaddles.left.y = lerp(smoothPaddles.left.y, state.players.left.y, 0.5);
         smoothPaddles.left.x = state.players.left.x; // x doesn't change for left
     }
     if (state.players.right) {
-        smoothPaddles.right.y = lerp(smoothPaddles.right.y, state.players.right.y, 0.2);
+        smoothPaddles.right.y = lerp(smoothPaddles.right.y, state.players.right.y, 0.5);
         smoothPaddles.right.x = state.players.right.x; // x might be different in your setup
     }
 
@@ -101,7 +106,11 @@ startGameBtn.addEventListener("click", () => {
 });
 
 serveBtn.addEventListener("click", () => {
-    socket.emit("serveBall");
+    // socket.emit("serveBall");
+    lamportClock++;
+    socket.emit("serveBall", {
+        lamport: lamportClock
+    });
 });
 
 // Paddle movement
@@ -109,9 +118,13 @@ document.addEventListener("keydown", (e) => {
     if (playerType === "spectator") return;
 
     if (e.key === "ArrowUp") {
-        socket.emit("movePaddle", "up");
+        // socket.emit("movePaddle", "up");
+        lamportClock++;
+    socket.emit("movePaddle", { direction: "up", lamport: lamportClock });
     } else if (e.key === "ArrowDown") {
-        socket.emit("movePaddle", "down");
+        // socket.emit("movePaddle", "down");
+        lamportClock++;
+    socket.emit("movePaddle", { direction: "down", lamport: lamportClock });
     }
 });
 
@@ -144,8 +157,9 @@ function drawGame() {
     const delay = now - serverTime;
 
     // Predict ball position
-    const predictedX = gameState.ball.x + gameState.ball.vx * (delay / 1000);
-    const predictedY = gameState.ball.y + gameState.ball.vy * (delay / 1000);
+    const clampedDelay = Math.min(delay, 100); // cap to 100ms
+    const predictedX = gameState.ball.x + gameState.ball.vx * (clampedDelay / 1000);
+    const predictedY = gameState.ball.y + gameState.ball.vy * (clampedDelay / 1000);
 
     ctx.beginPath();
     ctx.arc(predictedX, predictedY, gameState.ball.radius, 0, Math.PI * 2);
@@ -177,3 +191,44 @@ setInterval(() => {
         document.getElementById("pingDisplay").innerText = `Ping: ${ping}ms`;
     });
 }, 1000);
+
+setInterval(() => {
+    lamportClock++;
+    const message = {
+        content: "ping",
+        senderTime: Date.now(),
+        lamport: lamportClock
+    };
+    socket.emit("randomMessage", message);
+}, Math.random() * 5000 + 2000);
+
+socket.on("incomingMessage", (msg) => {
+    const receiveTime = Date.now();
+
+    // Lamport update
+    lamportClock = Math.max(lamportClock, msg.lamport) + 1;
+
+    const delay = receiveTime - msg.senderTime;
+
+    // Format log
+    const logLine =
+        `[🕓 Lamport: ${lamportClock}] From: ${msg.senderId.slice(0, 5)} | Msg Lamport: ${msg.lamport}
+    Sent: ${new Date(msg.senderTime).toLocaleTimeString()}
+    Recv: ${new Date(receiveTime).toLocaleTimeString()}
+    Delay: ${delay}ms
+`;
+
+    lamportMessages.push({
+        lamport: msg.lamport,
+        log: logLine
+    });
+
+    // Sort by Lamport timestamps
+    lamportMessages.sort((a, b) => a.lamport - b.lamport);
+
+    // Re-render log
+    messageLog.innerText = lamportMessages.map(m => m.log).join("\n");
+    messageLog.scrollTop = messageLog.scrollHeight;
+
+    // messageLog.innerText += logLine + "\n";
+});

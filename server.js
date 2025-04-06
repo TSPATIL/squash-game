@@ -20,7 +20,9 @@ function createRoom(id = null) {
         ball: resetBall(),
         gameStarted: false,
         gameActive: false,
-        turn: "left"
+        turn: "left",
+        lastServe: null, // 👈 Lamport ordering for serves
+        lastLamport: { left: 0, right: 0 } // 👈 store latest Lamport timestamp per player
     };
     return roomId;
 }
@@ -76,18 +78,39 @@ io.on("connection", (socket) => {
         emitGameState(currentRoom);
     });
 
-    socket.on("serveBall", () => {
+    socket.on("serveBall", ({ lamport }) => {
         const room = rooms[currentRoom];
         if (!room || !room.gameStarted || room.gameActive) return;
 
-        room.ball = resetBall();
-        room.gameActive = true;
-        emitGameState(currentRoom);
+        // room.ball = resetBall();
+        // room.gameActive = true;
+        // emitGameState(currentRoom);
+
+        // If no previous serve or this one is earlier (lower lamport timestamp)
+        if (!room.lastServe || lamport < room.lastServe.lamport) {
+            room.lastServe = { lamport, by: socket.id };
+
+            console.log(`[LAMPORT] Serve accepted from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
+
+            room.ball = resetBall();
+            room.gameActive = true;
+            emitGameState(currentRoom);
+        } else {
+            console.log(`[LAMPORT] Serve IGNORED from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
+        }
     });
 
-    socket.on("movePaddle", (direction) => {
+    socket.on("movePaddle", ({ direction, lamport }) => {
         const room = rooms[currentRoom];
         if (!room || !playerRole || playerRole === "spectator") return;
+
+        // Lamport check
+        if (lamport <= room.lastLamport[playerRole]) {
+            console.log(`[LAMPORT] Old paddle event from ${playerRole} ignored (lamport ${lamport})`);
+            return;
+        }
+
+        room.lastLamport[playerRole] = lamport;
 
         const paddle = room.players[playerRole];
         if (!paddle) return;
@@ -115,6 +138,14 @@ io.on("connection", (socket) => {
 
     socket.on("pingCheck", (cb) => {
         cb();
+    });
+
+    socket.on("randomMessage", (msg) => {
+        io.to(currentRoom).emit("incomingMessage", {
+            senderId: socket.id,
+            senderTime: msg.senderTime,
+            lamport: msg.lamport
+        });
     });
 });
 
@@ -166,17 +197,18 @@ setInterval(() => {
                 if (room.players[opponent].score >= MAX_SCORE) {
                     room.gameStarted = false;
                     room.gameActive = false;
-        
+
                     io.to(roomId).emit("gameOver", {
                         winner: opponent === 'left' ? 'Blue' : 'Red',
                         score: room.players[opponent].score
                     });
-        
+
                     return; // Skip reset
                 }
             }
             room.ball = resetBall();
             room.turn = opponent;
+            room.lastServe = null; // ✅ Allow new serve after point
         }
 
         emitGameState(roomId);
