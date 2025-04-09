@@ -57,7 +57,7 @@ socket.on("joinedRoom", ({ roomId: joinedId, playerType: type }) => {
 
     roomDisplay.textContent = `Room ID: ${roomId}`;
     playerType = type;
-    playerName.textContent = `You are: ${playerType === 'left' ? 'Blue' : 'Red'}`;
+    playerName.textContent = `You are: ${playerType === 'left' ? 'Blue' : playerType === 'right' ? 'Red' : 'Spectator'}`;
 
     if (type === "spectator") {
         alert("Room is full. You are watching as a spectator.");
@@ -75,11 +75,11 @@ socket.on("gameState", (state) => {
     gameState = state;
 
     if (state.players.left) {
-        smoothPaddles.left.y = lerp(smoothPaddles.left.y, state.players.left.y, 0.5);
+        smoothPaddles.left.y = lerp(smoothPaddles.left.y, state.players.left.y, 0.3);
         smoothPaddles.left.x = state.players.left.x; // x doesn't change for left
     }
     if (state.players.right) {
-        smoothPaddles.right.y = lerp(smoothPaddles.right.y, state.players.right.y, 0.5);
+        smoothPaddles.right.y = lerp(smoothPaddles.right.y, state.players.right.y, 0.3);
         smoothPaddles.right.x = state.players.right.x; // x might be different in your setup
     }
 
@@ -93,11 +93,25 @@ socket.on("gameState", (state) => {
     } else {
         serveBtn.style.display = "none";
     }
+
+    console.log("Game state updated:", state);
 });
 
 socket.on("gameOver", (data) => {
     alert(`🎉 Player ${data.winner.toUpperCase()} wins with score ${data.score}!`);
     // Optionally: reset scores or reload
+});
+
+socket.on("spectatorPrompt", ({ message }) => {
+    const wantsToPlay = confirm(message); // simple prompt
+    socket.emit("spectatorResponse", wantsToPlay);
+});
+
+socket.on("promotedToPlayer", ({ role }) => {
+    alert(`You’ve been promoted to play as ${role}!`);
+    playerType = role; // Update the local playerType
+    playerName.textContent = `You are: ${playerType === 'left' ? 'Blue' : playerType === 'right' ? 'Red' : 'Spectator'}`;
+    console.log(playerType)
 });
 
 // Control buttons
@@ -115,6 +129,7 @@ serveBtn.addEventListener("click", () => {
 
 // Paddle movement
 document.addEventListener("keydown", (e) => {
+    console.log(playerType)
     if (playerType === "spectator") return;
 
     if (e.key === "ArrowUp") {
@@ -189,6 +204,12 @@ setInterval(() => {
     socket.emit("pingCheck", () => {
         ping = Date.now() - start;
         document.getElementById("pingDisplay").innerText = `Ping: ${ping}ms`;
+        if (ping > 100) {
+            document.getElementById("latencyDisplay").style.color = "red";
+        }
+        else{
+            document.getElementById("latencyDisplay").style.color = "yellow";
+        }
     });
 }, 1000);
 

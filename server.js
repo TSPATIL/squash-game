@@ -11,6 +11,7 @@ app.use(express.static("public")); // Serve index.html + game.js
 
 const rooms = {};
 const MAX_SCORE = 5;
+const WORKER_ID = process.pid; // Unique per process
 
 function createRoom(id = null) {
     const roomId = id || nanoid(6);
@@ -21,9 +22,11 @@ function createRoom(id = null) {
         gameStarted: false,
         gameActive: false,
         turn: "left",
+        waitingList: [], // stores { socketId, wantsToPlay }
         lastServe: null, // 👈 Lamport ordering for serves
         lastLamport: { left: 0, right: 0 } // 👈 store latest Lamport timestamp per player
     };
+    console.log(`🧩 Room ${roomId} created by ServerNode-${WORKER_ID}`);
     return roomId;
 }
 
@@ -39,33 +42,58 @@ function resetBall() {
 
 io.on("connection", (socket) => {
     let currentRoom = null;
-    let playerRole = null;
+    // let playerRole = null;
 
     socket.on("joinRoom", (requestedRoomId) => {
-        // Create or join room
+        // // Create or join room
+        // const roomId = requestedRoomId || createRoom();
+        // if (!rooms[roomId]) createRoom(roomId);
+
+        // const room = rooms[roomId];
+        // currentRoom = roomId;
+
+        // // Assign role
+        // if (!room.players.left) {
+        //     room.players.left = { id: socket.id, x: 50, y: 200, score: 0 };
+        //     playerRole = "left";
+        // } else if (!room.players.right) {
+        //     room.players.right = { id: socket.id, x: 100, y: 200, score: 0 };
+        //     playerRole = "right";
+        // } else {
+        //     room.spectators.push(socket.id);
+        //     playerRole = "spectator";
+        // }
+
+        // console.log(room)
+
+        // socket.join(roomId);
+        // socket.emit("joinedRoom", { roomId, playerType: playerRole });
+
+        // emitGameState(roomId);
+
         const roomId = requestedRoomId || createRoom();
         if (!rooms[roomId]) createRoom(roomId);
 
         const room = rooms[roomId];
         currentRoom = roomId;
 
-        // Assign role
         if (!room.players.left) {
             room.players.left = { id: socket.id, x: 50, y: 200, score: 0 };
-            playerRole = "left";
+            socket.playerRole = "left";
         } else if (!room.players.right) {
             room.players.right = { id: socket.id, x: 100, y: 200, score: 0 };
-            playerRole = "right";
+            socket.playerRole = "right";
         } else {
             room.spectators.push(socket.id);
-            playerRole = "spectator";
+            socket.playerRole = "spectator";
+
+            // Ask spectator if they want to play next
+            socket.emit("spectatorPrompt", { message: "Do you want to join the queue to play when a player leaves?" });
         }
 
-        console.log(room)
-
         socket.join(roomId);
-        socket.emit("joinedRoom", { roomId, playerType: playerRole });
-
+        socket.emit("joinedRoom", { roomId, playerType: socket.playerRole });
+        console.log(`👤 Client ${socket.id} joined Room ${roomId} on ServerNode-${WORKER_ID}`);
         emitGameState(roomId);
     });
 
@@ -102,17 +130,17 @@ io.on("connection", (socket) => {
 
     socket.on("movePaddle", ({ direction, lamport }) => {
         const room = rooms[currentRoom];
-        if (!room || !playerRole || playerRole === "spectator") return;
+        if (!room || !socket.playerRole || socket.playerRole === "spectator") return;
 
         // Lamport check
-        if (lamport <= room.lastLamport[playerRole]) {
-            console.log(`[LAMPORT] Old paddle event from ${playerRole} ignored (lamport ${lamport})`);
+        if (lamport <= room.lastLamport[socket.playerRole]) {
+            console.log(`[LAMPORT] Old paddle event from ${socket.playerRole} ignored (lamport ${lamport})`);
             return;
         }
 
-        room.lastLamport[playerRole] = lamport;
+        room.lastLamport[socket.playerRole] = lamport;
 
-        const paddle = room.players[playerRole];
+        const paddle = room.players[socket.playerRole];
         if (!paddle) return;
 
         const speed = 50;
@@ -121,17 +149,69 @@ io.on("connection", (socket) => {
     });
 
     socket.on("disconnect", () => {
+        // if (!currentRoom) return;
+        // const room = rooms[currentRoom];
+        // if (!room) return;
+
+        // if (room.players.left?.id === socket.id) delete room.players.left;
+        // else if (room.players.right?.id === socket.id) delete room.players.right;
+        // else room.spectators = room.spectators.filter(id => id !== socket.id);
+
+        // if (Object.keys(room.players).length === 0) {
+        //     delete rooms[currentRoom];
+        // } else {
+        //     emitGameState(currentRoom);
+        // }
+        console.log("disconnected")
         if (!currentRoom) return;
         const room = rooms[currentRoom];
         if (!room) return;
 
-        if (room.players.left?.id === socket.id) delete room.players.left;
-        else if (room.players.right?.id === socket.id) delete room.players.right;
-        else room.spectators = room.spectators.filter(id => id !== socket.id);
+        let wasPlayer = false;
 
-        if (Object.keys(room.players).length === 0) {
+        if (room.players.left?.id === socket.id) {
+            delete room.players.left;
+            wasPlayer = true;
+        } else if (room.players.right?.id === socket.id) {
+            delete room.players.right;
+            wasPlayer = true;
+        } else {
+            room.spectators = room.spectators.filter(id => id !== socket.id);
+            room.waitingList = room.waitingList.filter(w => w.socketId !== socket.id);
+        }
+
+        // ✅ Promote next in queue
+        if (wasPlayer && room.waitingList.length > 0) {
+            const nextPlayer = room.waitingList.shift();
+            const spectatorIndex = room.spectators.indexOf(nextPlayer.socketId);
+            if (spectatorIndex !== -1) room.spectators.splice(spectatorIndex, 1);
+
+            const nextSocket = io.sockets.sockets.get(nextPlayer.socketId);
+            if (nextSocket) {
+                const side = !room.players.left ? "left" : "right";
+                room.players[side] = { id: nextPlayer.socketId, x: side === "left" ? 50 : 100, y: 200, score: 0 };
+                nextSocket.playerRole = side;
+                nextSocket.emit("promotedToPlayer", { role: side });
+            }
+        }
+
+        if (!room.players.left && !room.players.right) {
             delete rooms[currentRoom];
         } else {
+            console.log(room)
+            // 🎮 Reset the match after promotion
+            room.ball = resetBall();
+            room.gameStarted = false;
+            room.gameActive = false;
+            room.turn = "left";
+            room.lastServe = null;
+            room.lastLamport.left = 0;
+            room.lastLamport.right = 0;
+
+            if (room.players.left) room.players.left.score = 0;
+            if (room.players.right) room.players.right.score = 0;
+
+            emitGameState(currentRoom);
             emitGameState(currentRoom);
         }
     });
@@ -146,6 +226,20 @@ io.on("connection", (socket) => {
             senderTime: msg.senderTime,
             lamport: msg.lamport
         });
+    });
+
+    socket.on("spectatorResponse", (wantsToPlay) => {
+        const room = rooms[currentRoom];
+        if (!room || socket.playerRole !== "spectator") return;
+
+        if (wantsToPlay) {
+            // if (!room.wantToPlayQueue.includes(socket.id)) {
+            room.waitingList.push({ socketId: socket.id });
+            console.log(`[QUEUE] ${socket.id} wants to play next`);
+            // }
+        } else {
+            console.log(`[QUEUE] ${socket.id} will just spectate`);
+        }
     });
 });
 
@@ -231,7 +325,7 @@ function emitGameState(roomId) {
         serverTimestamp: Date.now() // <-- Time sync added here
     };
 
-    io.to(roomId).emit("gameState", state);
+    io.to(roomId).volatile.emit("gameState", state);
 }
 
 const PORT = process.env.PORT || 5000;
