@@ -20,6 +20,8 @@ let smoothPaddles = {
     right: { x: 0, y: 0 }
 };
 
+let lastPredictedBall = { x: 0, y: 0 };
+
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
@@ -71,6 +73,11 @@ socket.on("gameState", (state) => {
     const delay = now - serverTime;
 
     document.getElementById("latencyDisplay").innerText = `One-way Delay: ${delay}ms`;
+    if (delay > 120) {
+        document.getElementById("latencyDisplay").style.color = "red";
+    } else {
+        document.getElementById("latencyDisplay").style.color = "green";
+    }
 
     gameState = state;
 
@@ -86,7 +93,8 @@ socket.on("gameState", (state) => {
     drawGame();
 
     // Button logic
-    if (!gameState.gameStarted) {
+    const bothPlayersPresent = gameState.players.left && gameState.players.right;
+    if (!gameState.gameStarted || !bothPlayersPresent) {
         serveBtn.style.display = "none";
     } else if (!gameState.gameActive && playerType === gameState.turn) {
         serveBtn.style.display = "block";
@@ -135,11 +143,11 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowUp") {
         // socket.emit("movePaddle", "up");
         lamportClock++;
-    socket.emit("movePaddle", { direction: "up", lamport: lamportClock });
+        socket.emit("movePaddle", { direction: "up", lamport: lamportClock });
     } else if (e.key === "ArrowDown") {
         // socket.emit("movePaddle", "down");
         lamportClock++;
-    socket.emit("movePaddle", { direction: "down", lamport: lamportClock });
+        socket.emit("movePaddle", { direction: "down", lamport: lamportClock });
     }
 });
 
@@ -167,17 +175,35 @@ function drawGame() {
     // ctx.fill();
     // ctx.closePath();
 
-    const now = Date.now();
-    const serverTime = gameState.serverTimestamp;
-    const delay = now - serverTime;
+    // const now = Date.now();
+    // const serverTime = gameState.serverTimestamp;
+    // const delay = now - serverTime;
 
-    // Predict ball position
-    const clampedDelay = Math.min(delay, 100); // cap to 100ms
-    const predictedX = gameState.ball.x + gameState.ball.vx * (clampedDelay / 1000);
-    const predictedY = gameState.ball.y + gameState.ball.vy * (clampedDelay / 1000);
+    // // Predict ball position
+    // const clampedDelay = Math.min(delay, 100); // cap to 100ms
+    // const predictedX = gameState.ball.x + gameState.ball.vx * (clampedDelay / 1000);
+    // const predictedY = gameState.ball.y + gameState.ball.vy * (clampedDelay / 1000);
+
+    let predictedX, predictedY;
+
+    if (gameState.gameActive) {
+        const now = Date.now();
+        const serverTime = gameState.serverTimestamp;
+        const delay = now - serverTime;
+        const clampedDelay = Math.min(delay, 100);
+        predictedX = gameState.ball.x + gameState.ball.vx * (clampedDelay / 1000);
+        predictedY = gameState.ball.y + gameState.ball.vy * (clampedDelay / 1000);
+    } else {
+        predictedX = gameState.ball.x;
+        predictedY = gameState.ball.y;
+    }
+
+    // Interpolate toward predicted position
+    lastPredictedBall.x = lerp(lastPredictedBall.x, predictedX, 0.3);
+    lastPredictedBall.y = lerp(lastPredictedBall.y, predictedY, 0.3);
 
     ctx.beginPath();
-    ctx.arc(predictedX, predictedY, gameState.ball.radius, 0, Math.PI * 2);
+    ctx.arc(lastPredictedBall.x, lastPredictedBall.y, gameState.ball.radius, 0, Math.PI * 2);
     ctx.fillStyle = "black";
     ctx.fill();
     ctx.closePath();
@@ -189,7 +215,10 @@ function drawGame() {
     ctx.fillText(`Red: ${gameState.players.right?.score || 0}`, 650, 20);
 
     // Game status messages
-    if (!gameState.gameStarted) {
+    if (!gameState.players.left || !gameState.players.right) {
+        ctx.fillText("Waiting for another player to join...", 250, 250);
+    }
+    else if (!gameState.gameStarted) {
         ctx.fillText("Click 'Start Game' to begin", 300, 250);
     } else if (!gameState.gameActive && playerType === gameState.turn) {
         ctx.fillText("Your turn to serve!", 320, 250);
@@ -207,7 +236,7 @@ setInterval(() => {
         if (ping > 100) {
             document.getElementById("latencyDisplay").style.color = "red";
         }
-        else{
+        else {
             document.getElementById("latencyDisplay").style.color = "yellow";
         }
     });

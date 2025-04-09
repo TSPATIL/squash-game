@@ -114,6 +114,12 @@ io.on("connection", (socket) => {
         // room.gameActive = true;
         // emitGameState(currentRoom);
 
+        // 🚫 Prevent serve if both players are not connected
+        if (!room.players.left || !room.players.right) {
+            console.log("❌ Cannot serve: waiting for second player.");
+            return;
+        }
+
         // If no previous serve or this one is earlier (lower lamport timestamp)
         if (!room.lastServe || lamport < room.lastServe.lamport) {
             room.lastServe = { lamport, by: socket.id };
@@ -325,7 +331,7 @@ function emitGameState(roomId) {
         serverTimestamp: Date.now() // <-- Time sync added here
     };
 
-    io.to(roomId).volatile.emit("gameState", state);
+    io.to(roomId).emit("gameState", state);
 }
 
 const PORT = process.env.PORT || 5000;
