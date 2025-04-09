@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { nanoid } = require("nanoid");
+const { Worker } = require("worker_threads");
 
 const app = express();
 const server = http.createServer(app);
@@ -12,6 +13,16 @@ app.use(express.static("public")); // Serve index.html + game.js
 const rooms = {};
 const MAX_SCORE = 5;
 const WORKER_ID = process.pid; // Unique per process
+
+const gameWorker = new Worker("./gameWorker.js");
+
+// Receive updates from worker
+gameWorker.on("message", ({ type, roomId, data }) => {
+    if (type === "roomUpdate") {
+        rooms[roomId] = data;
+        emitGameState(roomId);
+    }
+});
 
 function createRoom(id = null) {
     const roomId = id || nanoid(6);
@@ -128,6 +139,10 @@ io.on("connection", (socket) => {
 
             room.ball = resetBall();
             room.gameActive = true;
+
+            // Notify game worker
+            gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+
             emitGameState(currentRoom);
         } else {
             console.log(`[LAMPORT] Serve IGNORED from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
@@ -152,6 +167,9 @@ io.on("connection", (socket) => {
         const speed = 50;
         if (direction === "up") paddle.y = Math.max(0, paddle.y - speed);
         if (direction === "down") paddle.y = Math.min(400, paddle.y + speed);
+        
+        // Notify game worker
+        gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
     });
 
     socket.on("disconnect", () => {
