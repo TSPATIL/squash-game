@@ -24,6 +24,32 @@ gameWorker.on("message", ({ type, roomId, data }) => {
     }
 });
 
+// 📦 Add this at the top with other requires
+class Mutex {
+    constructor() {
+        this.locked = false;
+        this.queue = [];
+    }
+
+    lock(fn) {
+        if (this.locked) {
+            this.queue.push(fn);
+        } else {
+            this.locked = true;
+            fn(this.unlock.bind(this));
+        }
+    }
+
+    unlock() {
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            next(this.unlock.bind(this));
+        } else {
+            this.locked = false;
+        }
+    }
+}
+
 function createRoom(id = null) {
     const roomId = id || nanoid(6);
     rooms[roomId] = {
@@ -35,7 +61,9 @@ function createRoom(id = null) {
         turn: "left",
         waitingList: [], // stores { socketId, wantsToPlay }
         lastServe: null, // 👈 Lamport ordering for serves
-        lastLamport: { left: 0, right: 0 } // 👈 store latest Lamport timestamp per player
+        lastLamport: { left: 0, right: 0 }, // 👈 store latest Lamport timestamp per player
+        paddleMutex: new Mutex(),
+        serveMutex: new Mutex(),
     };
     console.log(`🧩 Room ${roomId} created by ServerNode-${WORKER_ID}`);
     return roomId;
@@ -89,10 +117,10 @@ io.on("connection", (socket) => {
         currentRoom = roomId;
 
         if (!room.players.left) {
-            room.players.left = { id: socket.id, x: 50, y: 200, score: 0 };
+            room.players.left = { id: socket.id, x: 50, y: 200, score: 0, lastActive: Date.now()  };
             socket.playerRole = "left";
         } else if (!room.players.right) {
-            room.players.right = { id: socket.id, x: 100, y: 200, score: 0 };
+            room.players.right = { id: socket.id, x: 100, y: 200, score: 0, lastActive: Date.now()  };
             socket.playerRole = "right";
         } else {
             room.spectators.push(socket.id);
@@ -131,45 +159,78 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // If no previous serve or this one is earlier (lower lamport timestamp)
-        if (!room.lastServe || lamport < room.lastServe.lamport) {
-            room.lastServe = { lamport, by: socket.id };
+        // // If no previous serve or this one is earlier (lower lamport timestamp)
+        // if (!room.lastServe || lamport < room.lastServe.lamport) {
+        //     room.lastServe = { lamport, by: socket.id };
 
-            console.log(`[LAMPORT] Serve accepted from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
+        //     console.log(`[LAMPORT] Serve accepted from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
 
-            room.ball = resetBall();
-            room.gameActive = true;
+        //     room.ball = resetBall();
+        //     room.gameActive = true;
 
-            // Notify game worker
-            gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+        //     // Notify game worker
+        //     gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
 
-            emitGameState(currentRoom);
-        } else {
-            console.log(`[LAMPORT] Serve IGNORED from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
-        }
+        //     emitGameState(currentRoom);
+        // } else {
+        //     console.log(`[LAMPORT] Serve IGNORED from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
+        // }
+        room.serveMutex.lock((unlock) => {
+            
+        room.players[socket.playerRole].lastActive = Date.now();
+            if (!room.lastServe || lamport < room.lastServe.lamport) {
+                room.lastServe = { lamport, by: socket.id };
+                room.ball = resetBall();
+                room.gameActive = true;
+                gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+                emitGameState(currentRoom);
+            } else {
+                console.log(`[LAMPORT] Serve IGNORED from ${socket.id.slice(0, 5)} with Lamport ${lamport}`);
+            }
+            unlock();
+        });
     });
 
     socket.on("movePaddle", ({ direction, lamport }) => {
         const room = rooms[currentRoom];
         if (!room || !socket.playerRole || socket.playerRole === "spectator") return;
 
-        // Lamport check
-        if (lamport <= room.lastLamport[socket.playerRole]) {
-            console.log(`[LAMPORT] Old paddle event from ${socket.playerRole} ignored (lamport ${lamport})`);
-            return;
-        }
+        // // Lamport check
+        // if (lamport <= room.lastLamport[socket.playerRole]) {
+        //     console.log(`[LAMPORT] Old paddle event from ${socket.playerRole} ignored (lamport ${lamport})`);
+        //     return;
+        // }
 
-        room.lastLamport[socket.playerRole] = lamport;
+        // room.lastLamport[socket.playerRole] = lamport;
 
-        const paddle = room.players[socket.playerRole];
-        if (!paddle) return;
+        // const paddle = room.players[socket.playerRole];
+        // if (!paddle) return;
 
-        const speed = 50;
-        if (direction === "up") paddle.y = Math.max(0, paddle.y - speed);
-        if (direction === "down") paddle.y = Math.min(400, paddle.y + speed);
+        // const speed = 50;
+        // if (direction === "up") paddle.y = Math.max(0, paddle.y - speed);
+        // if (direction === "down") paddle.y = Math.min(400, paddle.y + speed);
         
-        // Notify game worker
-        gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+        // // Notify game worker
+        // gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+        room.paddleMutex.lock((unlock) => {
+            room.players[socket.playerRole].lastActive = Date.now();
+            if (lamport <= room.lastLamport[socket.playerRole]) {
+                console.log(`[LAMPORT] Old paddle event from ${socket.playerRole} ignored (lamport ${lamport})`);
+                unlock(); return;
+            }
+    
+            room.lastLamport[socket.playerRole] = lamport;
+    
+            const paddle = room.players[socket.playerRole];
+            if (!paddle) { unlock(); return; }
+    
+            const speed = 50;
+            if (direction === "up") paddle.y = Math.max(0, paddle.y - speed);
+            if (direction === "down") paddle.y = Math.min(400, paddle.y + speed);
+    
+            gameWorker.postMessage({ type: "updateRoom", payload: { roomId: currentRoom, roomData: room } });
+            unlock();
+        });
     });
 
     socket.on("disconnect", () => {
@@ -332,6 +393,53 @@ setInterval(() => {
         emitGameState(roomId);
     }
 }, 1000 / 60);
+
+const MAX_IDLE_TIME = 10000; // 10 seconds
+
+// setInterval(() => {
+//     for (const [roomId, room] of Object.entries(rooms)) {
+//         for (const role of ["left", "right"]) {
+//             const player = room.players[role];
+//             if (!player) continue;
+
+//             const now = Date.now();
+//             const idleDuration = now - (player.lastActive || 0);
+
+//             if (idleDuration > MAX_IDLE_TIME) {
+//                 console.log(`🛑 DEADLOCK detected: ${role} (${player.id}) in ${roomId} idle for ${idleDuration}ms`);
+
+//                 // Disconnect the deadlocked player
+//                 const socketToKick = io.sockets.sockets.get(player.id);
+//                 if (socketToKick) socketToKick.disconnect(true);
+
+//                 // Promote spectator if available
+//                 if (room.waitingList.length > 0) {
+//                     const next = room.waitingList.shift();
+//                     const nextSocket = io.sockets.sockets.get(next.socketId);
+//                     if (nextSocket) {
+//                         const side = role; // take over deadlocked player's side
+//                         room.players[side] = {
+//                             id: next.socketId,
+//                             x: side === "left" ? 50 : 100,
+//                             y: 200,
+//                             score: 0,
+//                             lastActive: Date.now()
+//                         };
+//                         room.spectators = room.spectators.filter(id => id !== next.socketId);
+//                         nextSocket.playerRole = side;
+//                         nextSocket.emit("promotedToPlayer", { role: side });
+//                         console.log(`✅ Promoted spectator ${next.socketId} to replace deadlocked player`);
+//                     }
+//                 } else {
+//                     // No spectators to promote
+//                     delete room.players[role];
+//                 }
+
+//                 emitGameState(roomId);
+//             }
+//         }
+//     }
+// }, 5000);
 
 function emitGameState(roomId) {
     const room = rooms[roomId];
